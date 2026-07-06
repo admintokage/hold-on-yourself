@@ -43,7 +43,7 @@
   }
   #char.pump { transform: scale(1.2); }
   #meterWrap {
-    position: absolute; bottom: 90px; left: 5%; width: 90%;
+    position: absolute; bottom: 108px; left: 5%; width: 90%;
     height: 14px; background: rgba(255,255,255,0.2);
     border-radius: 7px; overflow: hidden;
   }
@@ -52,9 +52,10 @@
     background: linear-gradient(90deg, #4fc3f7, #ff5252);
     transition: width 0.1s linear;
   }
-  #countdown {
-    position: absolute; bottom: 108px; right: 6%;
-    font-size: 13px; color: rgba(255,255,255,0.6);
+  #info {
+    position: absolute; bottom: 130px; left: 5%; width: 90%;
+    display: flex; justify-content: space-between;
+    font-size: 13px; color: rgba(255,255,255,0.7);
   }
   #startBtn {
     position: absolute; top: 50%; left: 50%;
@@ -76,8 +77,11 @@
       <div id="char">🧍</div>
     </div>
   </div>
+  <div id="info">
+    <span id="strokeCount">直近7秒: 0回</span>
+    <span id="countdown">次の評価まで 7秒</span>
+  </div>
   <div id="meterWrap"><div id="meter"></div></div>
-  <div id="countdown"></div>
   <button id="startBtn">スタート</button>
 </div>
 
@@ -85,10 +89,17 @@
 // ==== 調整用パラメータ ====
 const ANALYZE_W = 80;
 const ANALYZE_H = 60;
-const EVAL_INTERVAL_MS = 7000;   // 評価（セリフ更新）の間隔
-const THRESH_SLOW = 8;
-const THRESH_FAST = 20;
-const METER_MAX = 50;
+const EVAL_INTERVAL_MS = 7000;
+
+// ストローク検出のヒステリシス閾値
+const THRESH_ON = 20;   // これを超えたらストローク開始とみなす
+const THRESH_OFF = 9;   // これを下回ったら次のストローク検出待ちに戻る
+
+// 7秒間のストローク回数による判定
+const FAST_STROKE_COUNT = 5;  // これ以上なら「速い」
+const SLOW_STROKE_COUNT = 2;  // これ以下なら「遅い」
+
+const METER_MAX = 80;
 
 const PRAISE_MESSAGES = ["すごいすごい！", "その調子ー！", "いい動き！", "最高だよ！"];
 const NORMAL_MESSAGES = ["がんばれー！", "その調子！", "もう少し！"];
@@ -108,14 +119,15 @@ const bubble = document.getElementById('bubble');
 const charEl = document.getElementById('char');
 const meter = document.getElementById('meter');
 const countdownEl = document.getElementById('countdown');
+const strokeCountEl = document.getElementById('strokeCount');
 const startBtn = document.getElementById('startBtn');
 
 let prevFrame = null;
 let running = false;
 
-// 7秒間の蓄積用
-let accumulatedScore = 0;
-let sampleCount = 0;
+// ストローク検出用の状態
+let motionState = false;       // 現在「動き中」区間かどうか
+let strokeTimestamps = [];     // ストローク開始のタイムスタンプ（直近7秒分）
 let evalTimerStart = 0;
 
 startBtn.addEventListener('click', startCamera);
@@ -151,18 +163,25 @@ function loop() {
       }
       const rawScore = diffSum / (ANALYZE_W * ANALYZE_H);
 
-      // 蓄積（7秒ごとの評価用）
-      accumulatedScore += rawScore;
-      sampleCount++;
-
       // メーターはリアルタイム表示
       const pct = Math.min(100, (rawScore / METER_MAX) * 100);
       meter.style.width = pct + "%";
+
+      // ヒステリシスによるストローク検出
+      const now = performance.now();
+      if (!motionState && rawScore > THRESH_ON) {
+        motionState = true;
+        strokeTimestamps.push(now);
+      } else if (motionState && rawScore < THRESH_OFF) {
+        motionState = false;
+      }
+      // 直近7秒より古いタイムスタンプは捨てる
+      strokeTimestamps = strokeTimestamps.filter(t => now - t <= EVAL_INTERVAL_MS);
+      strokeCountEl.textContent = "直近7秒: " + strokeTimestamps.length + "回";
     }
     prevFrame = frame;
   }
 
-  // 残り秒数の表示
   const elapsed = (performance.now() - evalTimerStart) / 1000;
   const remain = Math.max(0, Math.ceil(EVAL_INTERVAL_MS / 1000 - elapsed));
   countdownEl.textContent = "次の評価まで " + remain + "秒";
@@ -171,12 +190,13 @@ function loop() {
 }
 
 function evaluateAndUpdate() {
-  if (sampleCount === 0) return;
-  const avgScore = accumulatedScore / sampleCount;
+  const now = performance.now();
+  strokeTimestamps = strokeTimestamps.filter(t => now - t <= EVAL_INTERVAL_MS);
+  const count = strokeTimestamps.length;
 
   let state;
-  if (avgScore >= THRESH_FAST) state = 'fast';
-  else if (avgScore < THRESH_SLOW) state = 'slow';
+  if (count >= FAST_STROKE_COUNT) state = 'fast';
+  else if (count <= SLOW_STROKE_COUNT) state = 'slow';
   else state = 'normal';
 
   if (state === 'fast') {
@@ -192,9 +212,6 @@ function evaluateAndUpdate() {
     charEl.textContent = CHAR_NORMAL;
   }
 
-  // リセットして次の7秒へ
-  accumulatedScore = 0;
-  sampleCount = 0;
   evalTimerStart = performance.now();
 }
 
