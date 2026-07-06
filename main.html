@@ -16,7 +16,7 @@
   #view {
     width: 100%; height: 100%;
     object-fit: cover;
-    transform: scaleX(-1); /* ミラー表示 */
+    transform: scaleX(-1);
   }
   #overlay {
     position: absolute; top: 0; left: 0; width: 100%; height: 100%;
@@ -52,6 +52,10 @@
     background: linear-gradient(90deg, #4fc3f7, #ff5252);
     transition: width 0.1s linear;
   }
+  #countdown {
+    position: absolute; bottom: 108px; right: 6%;
+    font-size: 13px; color: rgba(255,255,255,0.6);
+  }
   #startBtn {
     position: absolute; top: 50%; left: 50%;
     transform: translate(-50%, -50%);
@@ -73,17 +77,18 @@
     </div>
   </div>
   <div id="meterWrap"><div id="meter"></div></div>
+  <div id="countdown"></div>
   <button id="startBtn">スタート</button>
 </div>
 
 <script>
 // ==== 調整用パラメータ ====
-const ANALYZE_W = 80;       // 差分計算用の縮小幅（軽量化のため）
+const ANALYZE_W = 80;
 const ANALYZE_H = 60;
-const SMOOTHING = 0.7;      // 動きスコアの平滑化係数（大きいほど滑らか）
-const THRESH_SLOW = 8;      // これ未満なら「遅い」判定
-const THRESH_FAST = 20;     // これ以上なら「速い」判定
-const METER_MAX = 40;       // メーター表示の上限値
+const EVAL_INTERVAL_MS = 7000;   // 評価（セリフ更新）の間隔
+const THRESH_SLOW = 8;
+const THRESH_FAST = 20;
+const METER_MAX = 50;
 
 const PRAISE_MESSAGES = ["すごいすごい！", "その調子ー！", "いい動き！", "最高だよ！"];
 const NORMAL_MESSAGES = ["がんばれー！", "その調子！", "もう少し！"];
@@ -102,12 +107,16 @@ hiddenCanvas.height = ANALYZE_H;
 const bubble = document.getElementById('bubble');
 const charEl = document.getElementById('char');
 const meter = document.getElementById('meter');
+const countdownEl = document.getElementById('countdown');
 const startBtn = document.getElementById('startBtn');
 
 let prevFrame = null;
-let smoothedScore = 0;
-let lastMessageState = null;
 let running = false;
+
+// 7秒間の蓄積用
+let accumulatedScore = 0;
+let sampleCount = 0;
+let evalTimerStart = 0;
 
 startBtn.addEventListener('click', startCamera);
 
@@ -121,7 +130,9 @@ async function startCamera() {
     startBtn.style.display = 'none';
     bubble.textContent = "がんばれー！";
     running = true;
+    evalTimerStart = performance.now();
     requestAnimationFrame(loop);
+    setInterval(evaluateAndUpdate, EVAL_INTERVAL_MS);
   } catch (err) {
     bubble.textContent = "カメラを使えなかったよ: " + err.message;
   }
@@ -139,38 +150,52 @@ function loop() {
         diffSum += Math.abs(frame[i] - prevFrame[i]);
       }
       const rawScore = diffSum / (ANALYZE_W * ANALYZE_H);
-      smoothedScore = smoothedScore * SMOOTHING + rawScore * (1 - SMOOTHING);
-      updateUI(smoothedScore);
+
+      // 蓄積（7秒ごとの評価用）
+      accumulatedScore += rawScore;
+      sampleCount++;
+
+      // メーターはリアルタイム表示
+      const pct = Math.min(100, (rawScore / METER_MAX) * 100);
+      meter.style.width = pct + "%";
     }
     prevFrame = frame;
   }
+
+  // 残り秒数の表示
+  const elapsed = (performance.now() - evalTimerStart) / 1000;
+  const remain = Math.max(0, Math.ceil(EVAL_INTERVAL_MS / 1000 - elapsed));
+  countdownEl.textContent = "次の評価まで " + remain + "秒";
+
   requestAnimationFrame(loop);
 }
 
-function updateUI(score) {
-  const pct = Math.min(100, (score / METER_MAX) * 100);
-  meter.style.width = pct + "%";
+function evaluateAndUpdate() {
+  if (sampleCount === 0) return;
+  const avgScore = accumulatedScore / sampleCount;
 
   let state;
-  if (score >= THRESH_FAST) state = 'fast';
-  else if (score < THRESH_SLOW) state = 'slow';
+  if (avgScore >= THRESH_FAST) state = 'fast';
+  else if (avgScore < THRESH_SLOW) state = 'slow';
   else state = 'normal';
 
-  if (state !== lastMessageState) {
-    lastMessageState = state;
-    if (state === 'fast') {
-      bubble.textContent = pick(PRAISE_MESSAGES);
-      charEl.textContent = CHAR_PRAISE;
-      charEl.classList.add('pump');
-      setTimeout(() => charEl.classList.remove('pump'), 200);
-    } else if (state === 'slow') {
-      bubble.textContent = pick(SLOW_MESSAGES);
-      charEl.textContent = CHAR_SLOW;
-    } else {
-      bubble.textContent = pick(NORMAL_MESSAGES);
-      charEl.textContent = CHAR_NORMAL;
-    }
+  if (state === 'fast') {
+    bubble.textContent = pick(PRAISE_MESSAGES);
+    charEl.textContent = CHAR_PRAISE;
+    charEl.classList.add('pump');
+    setTimeout(() => charEl.classList.remove('pump'), 200);
+  } else if (state === 'slow') {
+    bubble.textContent = pick(SLOW_MESSAGES);
+    charEl.textContent = CHAR_SLOW;
+  } else {
+    bubble.textContent = pick(NORMAL_MESSAGES);
+    charEl.textContent = CHAR_NORMAL;
   }
+
+  // リセットして次の7秒へ
+  accumulatedScore = 0;
+  sampleCount = 0;
+  evalTimerStart = performance.now();
 }
 
 function pick(arr) {
